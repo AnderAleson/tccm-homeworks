@@ -10,8 +10,14 @@
 // 23-12-2024 Manage to compute the one electron integrals (core hamiltonian), value conprobated with an orca calculation
 
 // there is a very similar procedure in https://trex-coe.github.io/trexio/examples.html
-//the problem is done in fortran 30/12/2024
+// the two electron integral problem is done  in a similar way but in fortran
 // 30/12/2024 HF Energy obtained
+
+// 02/01/2025 MP2 Correction done.
+// Try and compare with orca calculations to check if similar resultas are obtained.
+
+
+
 
 
 
@@ -32,6 +38,8 @@ int main(int argc, char* argv[]) {
     double total_energy;  //HERE WE WILL STORE THE TOTAL ENERGY
 
     // Open the TREXIO file in read mode
+
+    
     trexio_exit_code rc;
     trexio_t* trexio_file = trexio_open(filename, 'r', TREXIO_AUTO, &rc);
     if (rc != TREXIO_SUCCESS) {
@@ -43,7 +51,7 @@ int main(int argc, char* argv[]) {
     FILE *output_file = fopen(output_filename, "w");
     if (output_file == NULL) {
         fprintf(stderr, "Error: Could not open output file '%s'\n", output_filename);
-        return EXIT_FAILURE;
+        exit(1);
     }
 
     // Variable to store the nuclear repulsion energy E_NN
@@ -58,7 +66,7 @@ int main(int argc, char* argv[]) {
     }
 
     // write the nuclear repulsion energy
-    fprintf(output_file,"Nuclear Repulsion Energy: %f a.u. \n ", nuclear_repulsion);
+    fprintf(output_file,"Nuclear Repulsion Energy: %f a.u. \n", nuclear_repulsion);
     
     // Variable to store the number of ocuppied orbitals
     int number_of_occupied_orbitals;
@@ -108,7 +116,7 @@ int main(int argc, char* argv[]) {
     if (core_hamiltonian == NULL) {
         fprintf(stderr, "Memory allocation failed\n");
         trexio_close(trexio_file);
-        return EXIT_FAILURE;
+        exit(1);
     }
     
     
@@ -120,7 +128,7 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Error reading core Hamiltonian: %s\n", trexio_string_of_error(rc));
         free(core_hamiltonian);
         trexio_close(trexio_file);
-        return EXIT_FAILURE;
+        exit(1);
     }
     
     //printf("Core Hamiltonian matrix:\n");
@@ -143,7 +151,7 @@ int main(int argc, char* argv[]) {
     // SHOW ONE ELECTRON INTEGRAL ENERGY
     
     
-    fprintf(output_file,"Core Hamiltonian Energy: %f a.u. \n ", E_core_hamiltonian);
+    fprintf(output_file,"Core Hamiltonian Energy: %f a.u. \n", E_core_hamiltonian);
     
     
     // LETS ADD THE CORE HAMILTONIAN ENERGY AND N-N REPULSION ENERGY
@@ -188,7 +196,7 @@ int main(int argc, char* argv[]) {
     if (rc != TREXIO_SUCCESS) {
 
         fprintf(stderr, "Error reading two-electron integral values: %s\n", trexio_string_of_error(rc));
-        return 1;
+        exit(1);
     }
 		
  /////////////////////////
@@ -239,9 +247,60 @@ int main(int argc, char* argv[]) {
     // Add all contributions to compute the total energy
     total_energy = total_energy +E_two_electron;
 
-    fprintf(output_file, "Total HF Energy: %f a.u. \n", total_energy);
 
-    // Free allocated memory
+    fprintf(output_file, "HF Energy: %f a.u. \n", total_energy);
+
+    // LETS COMPUTE NOW THE MP2 CORRECTION,
+    // FOR THIS WE NEED TO EXTRACT THE MO ENERGIES \epsilon
+    
+    // DEFINE POINTER WHERE MO E. WILL BE STORED
+    double* mo_energy = (double*) malloc(number_of_MO * sizeof(double));
+
+    // ALERT FOR ALLOCATION ERROR
+    if (mo_energy == NULL) {
+        fprintf(stderr, "Memory allocation failed for MO energies.\n");
+        trexio_close(trexio_file);
+        exit(1);
+    }
+
+
+    // READ THE MO E.
+
+    rc = trexio_read_mo_energy(trexio_file, mo_energy);
+
+    // ALERT FOR ERROR IN READING
+
+    if (rc != TREXIO_SUCCESS) {
+        fprintf(stderr, "Error reading MO energies: %s\n", trexio_string_of_error(rc));
+        free(mo_energy);
+        trexio_close(trexio_file);
+        exit(1);
+    }
+
+
+
+    double MP2_energy=0.0;
+
+    for (int i = 0; i < number_of_occupied_orbitals; i++) {  //RUN OVER THE OCCUPIED ORBITALS
+        for (int j = 0; j < number_of_occupied_orbitals; j++) {
+            for (int a = number_of_occupied_orbitals; a < number_of_MO; a++){  // RUN OVER VIRTUAL ORBITALS
+                for (int b = number_of_occupied_orbitals; b < number_of_MO; b++){
+                    
+                    MP2_energy=MP2_energy+(integrals_4d[i][j][a][b]*(2*integrals_4d[i][j][a][b]-integrals_4d[i][j][b][a]))/(mo_energy[i]+mo_energy[j]-mo_energy[a]-mo_energy[b]);
+                    
+                }
+            }
+           
+        }
+    }
+
+    fprintf(output_file,"MP2 correction Energy: %f  a.u. \n", MP2_energy);
+    //ADD MP2 CORRECTION TO THE TOTAL ENERGY
+    total_energy=total_energy+MP2_energy;
+
+    fprintf(output_file, "HF Energy with MP2 correction: %f a.u. \n", total_energy);    
+
+    // FREE ALL ALLOCATED MEMORY
     for (int i = 0; i < number_of_MO; i++) {
         for (int j = 0; j < number_of_MO; j++) {
             for (int k = 0; k < number_of_MO; k++) {
@@ -255,6 +314,8 @@ int main(int argc, char* argv[]) {
     free(index);
     free(value);
     free(core_hamiltonian);
+
+    free(mo_energy);
 
     // Close the TREXIO file
     rc = trexio_close(trexio_file);
